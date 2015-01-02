@@ -1,0 +1,3 @@
+The program allows to use the Arduino as externally triggered delay generator with a delay range of 4.5 us to 4092 us and an estimated precision of 180 ns. The program offers 5 programmable output channels (D3-D7).
+Use via Serial Interface at 19200 baud and send \n terminated commands.
+I tested the program on a Funduino Uno, Seeduino V.4 and Arduino Mini Pro. Beware of the ~4 microsecond deadtime afer the trigger or after a delay event.
