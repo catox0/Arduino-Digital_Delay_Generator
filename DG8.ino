@@ -75,12 +75,13 @@ void setup(){
 // Set up external trigger interrupt on pin D2 (INT0) (see: https://sites.google.com/site/qeewiki/books/avr-guide/external-interrupts-on-the-atmega328)
   PORTD = B00000100;        // Turn on the Pull-up on D2 (INT0, trigger pin)
   EICRA |= B00000011;       // Trigger on rising edge of INT0
-  EIMSK |= B00000001;       // Turn on trigger (INT0 on pin 2)
+  EIMSK |= B00000001;       // Turn on external trigger INT0 (on pin 2)
 
 // Set up timer1 interrupt (see: https://sites.google.com/site/qeewiki/books/avr-guide/timers-on-the-atmega328)
 //  TCCR1A &= ~B00000011;   // Set timer 1 to normal mode (WGM01,WGM00 = 0)
   TCCR1A = 0;               // set entire TCCR1A register to 0 (no PWM here)
   TCCR1B = 0;               // same for TCCR1B
+  TIMSK1 = B00000010;       // Enable timer 1 - compare interrupt A (set bit 1 - OCIE1A)
   
 // Turn off  timers 0 and 2 to avoid interference //
   TCCR0A = 0;               // Set entire TCC0A register to 0
@@ -88,22 +89,18 @@ void setup(){
   TCCR2A = 0;               // set entire TCCR1A register to 0
   TCCR2B = 0;               // same for TCCR1B
   
-  TCNT1  = 0;               // Initialize timer 1 counter
-  i = 0;                    // Intitialize delay list pointer 
-
-  OCR1A = Delays[0];        // Set compare match register for first delay
-  
-  TIMSK1 = B00000010;       // Enable only timer 1 - compare interrupt A (set bit 1 - OCIE1A)
   sei();                    // Activate interrupt (set register bit) 
 }
 
 void loop(){
   sCmd.readSerial();          // Process the serial commands
-  while (i<_imax){}           // Wait for timer delays
-  TCCR1B = B00000000;         // Stop Timer1
   TCNT1 = 0;                  // Reset timer 1 counter value  
   i=0;                        // Reset delay list pointer
   OCR1A = Delays[0];          // Reset compare match register for first delay
+  EIFR = 1;                   // Clear external interrupt flag
+  EIMSK = B00000001;          // Turn on external trigger INT0 (on pin 2)
+  while (i<_imax){}           // Wait for timer delays
+  TCCR1B = B00000000;         // Stop Timer1
   sei();                      // Activate external interrupt
 }
 
@@ -111,8 +108,10 @@ void loop(){
 ISR(TIMER1_COMPA_vect){   //--- INTERRUPT: TIMER 1 REACHED OCR1A VALUE ---//
 // It takes about 600 ns to set the digital output values. This is twice more than 
 // discussed in "http://www.billporter.info/2010/08/18/ready-set-oscillate-the-fastest-way-to-change-arduino-pins/'
-// The speed is reduced due to the variable look-up. Assigning a simple variable value 
-// takes some 400 ns. Looking up a value in the array takes some 600 ns.
+// The speed must be reduced due to the variable look-up. Assigning a simple variable value 
+// takes some 400 ns.
+// The dead time between two interrupts is some 4 microseconds, close to 64 
+// clock cycles. I don't know what takes so long.
   PORTD = DOut[i];            // Set digital output values
   OCR1A = Delays[++i];        // Set compare match register for next delay
 }
@@ -120,7 +119,7 @@ ISR(TIMER1_COMPA_vect){   //--- INTERRUPT: TIMER 1 REACHED OCR1A VALUE ---//
 ISR (INT0_vect){         //--- INTERRUPT: TRUGGER EVENT ON PIN 2 (INT0) ---//
 // I get up to 180 ns (3 ticks) jitter: 1 tick (62.5 ns) due to trigger digitization,
 // up to 2 ticks due to OCR1A value incrementing only on rising counter flag.
-  cli();                       // Stop external trigger interrupt
+  EIMSK = B00000000;          // Turn off external trigger INT0 (on pin 2)
   TCCR1B = B00000001;          // Start timer 1
 }
 
@@ -188,6 +187,7 @@ void SetDelay(){       //--- SET A NEW DELAY VALUE ---//
     } 
     else _dout = 255 - DOut[j-1];            // No digital out value given, invert every channel
     for (k=_imax; k>=j; k--) DOut[k] = DOut[k-1];  // Make space for new Dout value
+    _dout |= B00000100;                      // Pull-up D2 (trigger pin)
     DOut[j] = _dout;                         // Insert _dout in DOut[]
     _imax++;
   }
@@ -219,7 +219,7 @@ void LoadDelays(){      //--- READ DELAYS FROM EEPROM ---//
   sei();                                     // Activate interrupt
 }
 
-char *_itoa(char *_buf, long i, int len){
+char *_itoa(char *_buf, unsigned long i, int len){
 /* Converts an integer number into a right-aligned 
    string with the length len.
    Precision cannot exceed 5 decimal places.
@@ -230,7 +230,7 @@ char *_itoa(char *_buf, long i, int len){
   char *ptr = _buf;                         // ptr is pointer to _buf, *ptr is value
   int j=0;                                  // Position in char array
   if (len > 15) len = 15;                   // Limit memory
-  itoa(i, ptr, 10);                         // Convert integer to string, base 10 (decimal)
+  ltoa(i, ptr, 10);                         // Convert integer to string, base 10 (decimal)
   while (*ptr != '\0') {ptr++; j++;}        // Move to end of integer
   int k = j-1;                              // Length of number
   while (j++ < len) *ptr++ = ' ';           // Add spaces as specified by len (left alignment)
@@ -246,6 +246,7 @@ char *_ftoa(char *_buf, double f, int precision, int len){
    Precision cannot exceed 5 decimal places.
    Length cannot exceed 15 bytes.
    Requires char array buffer _buf with sufficient length. (char buf[len+1];)
+>> easier way is to use char * dtostrf(double __val, signed char __width, unsigned char __prec, char * __s); <<
    */
 //  static char _buf[16];                   // Alternative local buffer for char array
   char *ptr = _buf;                         // ptr is pointer to _buf, *ptr is value
@@ -313,11 +314,11 @@ char *_rtxt(char *_buf, char *txt, int len){
 }
 
 float TicksToMicros(int ticks){             //--- CONVERT TIMER TICKS TO MICROSECONDS ---//
-  return (float)(ticks + TimerOffset) * 1000/clock;
+  return (float)(ticks + TimerOffset) * 1000.0/clock;
 }
 
 unsigned long MicrosToTicks(float micro){   //--- CONVERT MICROSECONDS TO TIMER TICKS ---//
-  return (unsigned long)((micro) * clock/1000 +0.5) - TimerOffset;
+  return (unsigned long)(micro * clock/1000.0 +0.5) - TimerOffset;
 }
 
 void IDN() {               // --- QUERY DEVICE IDENTIFICATION --- //
@@ -334,9 +335,7 @@ void Help() {             // --- PRINT LIST OF COMMANDS --- //
   Serial.println("Command list (* indicates argument type)");    // Instructions
   Serial.println("List:            List delays");
   Serial.println("A *float *int:   Add delay at *float microsec. with *int Dout values");
-  Serial.println("                 'A 25 255' (at 20 microsec. set D3-7 true)");
   Serial.println("A *float B*bool: Add delay at *float microsec. with boolean Dout values");
-  Serial.println("                 'A 12 B10010' (at 12 microsec. set D7 and D5 true)");
   Serial.println("A *float:        Add delay at *float microsec. with inverted Dout values");
   Serial.println("C *char:         Clear delay number *char");
   Serial.println("C:               Clear all delays");
